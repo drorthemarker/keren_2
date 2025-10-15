@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Audio Text Synchronizer - Manual File Load</title>
     <style>
-        :root { --highlight-color: #FFD700; --primary-blue: #007bff; --mic-active-color: #dc3545; --light-gray: #6c757d; }
+        :root { --highlight-color: #FFD700; --primary-blue: #007bff; --mic-active-color: #dc3545; --light-gray: #6c757d; --orange-color: #fd7e14; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #f4f4f9; margin: 0; padding: 20px; box-sizing: border-box; }
         .container { width: 90%; max-width: 900px; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 20px; margin-top: 15px; }
         #file-selection { width: 90%; max-width: 900px; margin-bottom: 20px; text-align: right; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
@@ -16,6 +16,7 @@
         button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; background-color: var(--primary-blue); color: white; transition: background-color 0.2s; min-width: 180px; text-align: center;}
         button.upload-btn { background-color: var(--light-gray); flex-grow: 1; }
         button#play-mic-btn.active { background-color: var(--mic-active-color); }
+        button#restart-btn { background-color: var(--orange-color); }
         button:hover:not(:disabled) { opacity: 0.85; }
         button:disabled { background-color: #a0a0a0; cursor: not-allowed; }
         .font-controls { display: flex; gap: 5px; }
@@ -29,10 +30,8 @@
     <div id="file-selection">
         <h2>אנא העלה את הקבצים שלך:</h2>
         <div class="file-upload-area">
-            <!-- These inputs are hidden, triggered by the buttons -->
             <input type="file" id="audio-file-input" accept=".wav,audio/wav" style="display: none;">
             <input type="file" id="timestamp-file-input" accept=".txt,text/plain" style="display: none;">
-
             <button id="upload-audio-btn" class="upload-btn">בחר קובץ שמע (wav)</button>
             <button id="upload-sync-btn" class="upload-btn">בחר קובץ תזמונים (txt)</button>
         </div>
@@ -47,6 +46,7 @@
         <div class="controls">
             <button id="play-chunk-btn" disabled>נגן מקטע הבא</button>
             <button id="play-mic-btn" disabled>התחל עם מיקרופון</button>
+            <button id="restart-btn" disabled>התחל מחדש</button>
             <div class="font-controls">
                 <button id="font-decrease-btn" title="הקטן גופן">-</button>
                 <button id="font-increase-btn" title="הגדל גופן">+</button>
@@ -63,6 +63,7 @@
             textDisplay: document.getElementById('text-display'),
             playChunkBtn: document.getElementById('play-chunk-btn'),
             playMicBtn: document.getElementById('play-mic-btn'),
+            restartBtn: document.getElementById('restart-btn'),
             fontIncreaseBtn: document.getElementById('font-increase-btn'),
             fontDecreaseBtn: document.getElementById('font-decrease-btn'),
             status: document.getElementById('status'),
@@ -83,7 +84,6 @@
             chunkIndex: 0,
         };
         
-        // --- Setup and File Loading ---
         window.addEventListener('DOMContentLoaded', () => {
             if (!isSpeechRecognitionSupported) {
                 elements.playMicBtn.disabled = true;
@@ -91,37 +91,27 @@
             }
         });
 
-        // Function to check if both files are selected and enable the load button
         function checkFilesSelected() {
             const audioFile = elements.audioFileInput.files[0];
             const timestampFile = elements.timestampFileInput.files[0];
-
+            elements.loadFilesBtn.disabled = !(audioFile && timestampFile);
             if (audioFile && timestampFile) {
-                elements.loadFilesBtn.disabled = false;
-                elements.status.textContent = 'קבצים נבחרו. לחץ על "טען קבצים" כדי להמשיך.';
-            } else {
-                elements.loadFilesBtn.disabled = true;
+                 elements.status.textContent = 'קבצים נבחרו. לחץ על "טען קבצים" כדי להמשיך.';
             }
         }
 
-        // Trigger file inputs with custom buttons
         elements.uploadAudioBtn.addEventListener('click', () => elements.audioFileInput.click());
         elements.uploadSyncBtn.addEventListener('click', () => elements.timestampFileInput.click());
 
-        // Listen for file selection
         elements.audioFileInput.addEventListener('change', () => {
             const file = elements.audioFileInput.files[0];
-            if (file) {
-                elements.uploadAudioBtn.textContent = file.name;
-            }
+            if (file) elements.uploadAudioBtn.textContent = file.name;
             checkFilesSelected();
         });
 
         elements.timestampFileInput.addEventListener('change', () => {
             const file = elements.timestampFileInput.files[0];
-            if (file) {
-                elements.uploadSyncBtn.textContent = file.name;
-            }
+            if (file) elements.uploadSyncBtn.textContent = file.name;
             checkFilesSelected();
         });
 
@@ -165,6 +155,7 @@
                 state.timestamps = parseTimestamps(timestampText);
 
                 elements.playChunkBtn.disabled = false;
+                elements.restartBtn.disabled = false;
                 if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
                 elements.status.textContent = 'מוכן. לחץ על כפתור כדי להתחיל.';
             } catch (error) {
@@ -172,11 +163,12 @@
                 elements.status.textContent = `שגיאה בטעינת הקבצים: ${error.message}`;
                 elements.playChunkBtn.disabled = true;
                 elements.playMicBtn.disabled = true;
+                elements.restartBtn.disabled = true;
             }
         });
 
         function resetStateAndUI() {
-            if (isMicrophoneMode) stopMicrophoneMode();
+            if (isMicrophoneMode) pauseMicrophoneMode();
             if (currentChunkSource) currentChunkSource.stop();
             elements.audioPlayer.pause();
             elements.audioPlayer.removeAttribute('src');
@@ -190,72 +182,37 @@
         function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
         function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
         
-        // --- MODIFIED LOGIC ---
-        // This function now intelligently finds the best breaking point for a chunk of text.
         function calculateNextChunk() {
             const totalWords = state.timestamps.length;
             const startIndex = state.chunkIndex;
-
-            if (startIndex >= totalWords) {
-                return { startIdx: -1, endIdx: -1 }; // No more words left
-            }
-
-            const minChunkSize = 3;
-            const maxChunkSize = 5; // You can adjust this value if needed
-
+            if (startIndex >= totalWords) return { startIdx: -1, endIdx: -1 };
+            const minChunkSize = 3, maxChunkSize = 5;
             let bestEndIndex = -1;
 
-            // First, search for strong terminators (like '.', '?', '!') within the desired range
             for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
                 const word = state.timestamps[i].word;
-                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!')) {
-                    bestEndIndex = i;
-                    break; // Found the best possible break, no need to search further
-                }
+                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!')) { bestEndIndex = i; break; }
             }
 
-            // If no strong terminator was found, search for weaker separators (like ',')
             if (bestEndIndex === -1) {
-                // Search backwards from the max length to find the latest possible separator
                 for (let i = startIndex + maxChunkSize - 1; i >= startIndex + minChunkSize - 1; i--) {
                     if (i < totalWords) {
                         const word = state.timestamps[i].word;
-                        if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
-                            bestEndIndex = i;
-                            break; // Found a good breaking point
-                        }
+                        if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) { bestEndIndex = i; break; }
                     }
                 }
             }
 
-            // If still no punctuation break, try to avoid breaking right before "ו"
             if (bestEndIndex === -1) {
-                // We check from the max size downwards to get the longest possible chunk
                 for (let i = Math.min(startIndex + maxChunkSize - 1, totalWords - 1); i >= startIndex + minChunkSize - 1; i--) {
-                    // Check if the *next* word starts with "ו"
                     if (i + 1 < totalWords) {
-                        const nextWord = state.timestamps[i + 1].word;
-                        if (!nextWord.startsWith('ו')) {
-                            bestEndIndex = i; // This is a safe place to break
-                            break;
-                        }
-                    } else {
-                        // This is the last word of the text, so it's a valid end index
-                        bestEndIndex = i;
-                        break;
-                    }
+                        if (!state.timestamps[i + 1].word.startsWith('ו')) { bestEndIndex = i; break; }
+                    } else { bestEndIndex = i; break; }
                 }
             }
             
-            // If no ideal break was found through the logic above, default to the max chunk size
-            if (bestEndIndex === -1) {
-                bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
-            }
-            
-            // Final fallback to ensure we always make progress, even if the above logic fails
-            if (bestEndIndex < startIndex) {
-               bestEndIndex = Math.min(startIndex + minChunkSize - 1, totalWords - 1);
-            }
+            if (bestEndIndex === -1) bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
+            if (bestEndIndex < startIndex) bestEndIndex = Math.min(startIndex + minChunkSize - 1, totalWords - 1);
 
             return { startIdx: startIndex, endIdx: bestEndIndex };
         }
@@ -273,40 +230,56 @@
             } 
         }
 
-        // --- Core Logic for Processing Chunks ---
         function processNextChunk(isMicMode = false) {
             elements.playChunkBtn.disabled = true;
             elements.playMicBtn.disabled = true;
+            elements.restartBtn.disabled = true;
+
             const { startIdx, endIdx } = calculateNextChunk();
+
             if (startIdx === -1) {
                 elements.status.textContent = "הגעת לסוף!";
-                if (isMicMode) stopMicrophoneMode();
-                else {
-                    elements.playChunkBtn.disabled = false;
-                    if(isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
-                }
-                state.chunkIndex = 0;
+                if (isMicMode) pauseMicrophoneMode();
+                state.chunkIndex = 0; // Reset for next time
                 elements.textDisplay.innerHTML = '';
+                elements.playChunkBtn.disabled = false;
+                elements.restartBtn.disabled = false;
+                if(isSpeechRecognitionSupported) {
+                    elements.playMicBtn.disabled = false;
+                    elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+                }
                 return;
             }
+
             renderChunk(startIdx, endIdx);
+
+            // --- IMPROVED TIMING LOGIC ---
+            const PRE_START_OFFSET = 0.05; // Start 50ms earlier
+            const POST_END_OFFSET = 0.05;  // End 50ms later
             const startTime = state.timestamps[startIdx].start;
             const stopTime = state.timestamps[endIdx].end;
-            const safeStartTime = Math.max(0, startTime);
-            const duration = Math.max(0, (stopTime - safeStartTime) + 0.1);
+            const safeStartTime = Math.max(0, startTime - PRE_START_OFFSET);
+            const duration = Math.max(0, (stopTime + POST_END_OFFSET) - safeStartTime);
+            
             if (currentChunkSource) currentChunkSource.stop();
             currentChunkSource = audioContext.createBufferSource();
             currentChunkSource.buffer = audioBuffer;
             currentChunkSource.connect(audioContext.destination);
+            
             currentChunkSource.onended = () => {
-                if (isMicMode && isMicrophoneMode) {
+                if (isMicrophoneMode) {
                     elements.status.textContent = 'תורך, דבר...';
                     recognition.start();
-                } else if (!isMicMode) {
-                    elements.playChunkBtn.disabled = false;
-                    if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
+                }
+                elements.playChunkBtn.disabled = false;
+                elements.restartBtn.disabled = false;
+                if (isSpeechRecognitionSupported && !isMicrophoneMode) {
+                    elements.playMicBtn.disabled = false;
+                } else if (isSpeechRecognitionSupported && isMicrophoneMode) {
+                    elements.playMicBtn.disabled = false; // re-enable pause button after speaking
                 }
             };
+            
             elements.status.textContent = 'מקשיבים לאודיו...';
             currentChunkSource.start(0, safeStartTime, duration);
             state.chunkIndex = endIdx + 1;
@@ -317,8 +290,8 @@
             processNextChunk(false);
         });
 
-        // --- Speech Recognition Logic ---
         function setupSpeechRecognition() {
+            if (recognition) return; // Setup only once
             recognition = new SpeechRecognition();
             recognition.lang = 'he-IL';
             recognition.continuous = false;
@@ -334,41 +307,51 @@
                     recognition.start();
                 } else if (event.error === 'not-allowed') {
                     elements.status.textContent = 'נדחתה הרשאת גישה למיקרופון.';
-                    stopMicrophoneMode();
+                    pauseMicrophoneMode();
                 }
             };
         }
 
-        function startMicrophoneMode() {
+        function startOrResumeMicrophoneMode() {
             isMicrophoneMode = true;
-            state.chunkIndex = 0;
-            elements.playMicBtn.textContent = 'עצור מיקרופון';
+            elements.playMicBtn.textContent = 'השהה מיקרופון';
             elements.playMicBtn.classList.add('active');
             setupSpeechRecognition();
             processNextChunk(true);
         }
 
-        function stopMicrophoneMode() {
+        function pauseMicrophoneMode() {
             isMicrophoneMode = false;
             if (recognition) recognition.abort();
             if (currentChunkSource) currentChunkSource.stop();
-            elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+            
+            elements.playMicBtn.textContent = 'המשך עם מיקרופון';
             elements.playMicBtn.classList.remove('active');
-            elements.status.textContent = 'מצב מיקרופון הופסק.';
+            elements.status.textContent = 'מצב מיקרופון הושהה.';
+            
             const filesLoaded = audioBuffer && state.timestamps.length > 0;
             elements.playChunkBtn.disabled = !filesLoaded;
+            elements.restartBtn.disabled = !filesLoaded;
             if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = !filesLoaded;
         }
 
+        function restartProcess() {
+            if (isMicrophoneMode) pauseMicrophoneMode();
+            state.chunkIndex = 0;
+            elements.textDisplay.innerHTML = '';
+            elements.status.textContent = 'התהליך אופס. לחץ על "התחל" כדי להתחיל מההתחלה.';
+            elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+        }
+        elements.restartBtn.addEventListener('click', restartProcess);
+
         elements.playMicBtn.addEventListener('click', () => {
             if (isMicrophoneMode) {
-                stopMicrophoneMode();
+                pauseMicrophoneMode();
             } else {
-                startMicrophoneMode();
+                startOrResumeMicrophoneMode();
             }
         });
         
-        // --- Font Size Controls ---
         elements.fontIncreaseBtn.addEventListener('click', () => { if (currentFontSize >= 100) return; currentFontSize += 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
         elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
     </script>
