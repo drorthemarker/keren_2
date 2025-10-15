@@ -118,11 +118,7 @@
         elements.loadFilesBtn.addEventListener('click', async () => {
             const audioFile = elements.audioFileInput.files[0];
             const timestampFile = elements.timestampFileInput.files[0];
-
-            if (!audioFile || !timestampFile) {
-                elements.status.textContent = 'שגיאה: עליך לבחור גם קובץ שמע וגם קובץ תזמונים.';
-                return;
-            }
+            if (!audioFile || !timestampFile) return;
 
             resetStateAndUI();
             elements.status.textContent = `טוען קבצים...`;
@@ -170,9 +166,6 @@
         function resetStateAndUI() {
             if (isMicrophoneMode) pauseMicrophoneMode();
             if (currentChunkSource) currentChunkSource.stop();
-            elements.audioPlayer.pause();
-            elements.audioPlayer.removeAttribute('src');
-            elements.audioPlayer.load();
             audioBuffer = null;
             state.timestamps = [];
             state.chunkIndex = 0;
@@ -182,38 +175,40 @@
         function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
         function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
         
+        // --- NEW AND IMPROVED CHUNKING LOGIC ---
         function calculateNextChunk() {
             const totalWords = state.timestamps.length;
             const startIndex = state.chunkIndex;
             if (startIndex >= totalWords) return { startIdx: -1, endIdx: -1 };
-            const minChunkSize = 3, maxChunkSize = 5;
+
+            const SILENCE_THRESHOLD = 0.25; // A 250ms pause is a strong indicator of a new phrase.
+            const minChunkSize = 3;
+            const maxChunkSize = 7; // We can allow slightly longer chunks if the speech flows.
+
             let bestEndIndex = -1;
 
-            for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
-                const word = state.timestamps[i].word;
-                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!')) { bestEndIndex = i; break; }
-            }
-
-            if (bestEndIndex === -1) {
-                for (let i = startIndex + maxChunkSize - 1; i >= startIndex + minChunkSize - 1; i--) {
-                    if (i < totalWords) {
-                        const word = state.timestamps[i].word;
-                        if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) { bestEndIndex = i; break; }
-                    }
-                }
-            }
-
-            if (bestEndIndex === -1) {
-                for (let i = Math.min(startIndex + maxChunkSize - 1, totalWords - 1); i >= startIndex + minChunkSize - 1; i--) {
-                    if (i + 1 < totalWords) {
-                        if (!state.timestamps[i + 1].word.startsWith('ו')) { bestEndIndex = i; break; }
-                    } else { bestEndIndex = i; break; }
+            // 1. Prioritize finding a natural pause in the audio.
+            for (let i = startIndex + minChunkSize; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
+                const previousWord = state.timestamps[i - 1];
+                const currentWord = state.timestamps[i];
+                const gap = currentWord.start - previousWord.end;
+                if (gap >= SILENCE_THRESHOLD) {
+                    bestEndIndex = i - 1; // The chunk ends *before* the long pause.
+                    return { startIdx: startIndex, endIdx: bestEndIndex };
                 }
             }
             
-            if (bestEndIndex === -1) bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
-            if (bestEndIndex < startIndex) bestEndIndex = Math.min(startIndex + minChunkSize - 1, totalWords - 1);
+            // 2. If no pause is found, fall back to punctuation-based logic.
+            for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
+                const word = state.timestamps[i].word;
+                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!') || word.endsWith(',')) {
+                    bestEndIndex = i;
+                    return { startIdx: startIndex, endIdx: bestEndIndex };
+                }
+            }
 
+            // 3. If still no good break, default to the max chunk size.
+            bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
             return { startIdx: startIndex, endIdx: bestEndIndex };
         }
 
@@ -240,7 +235,7 @@
             if (startIdx === -1) {
                 elements.status.textContent = "הגעת לסוף!";
                 if (isMicMode) pauseMicrophoneMode();
-                state.chunkIndex = 0; // Reset for next time
+                state.chunkIndex = 0;
                 elements.textDisplay.innerHTML = '';
                 elements.playChunkBtn.disabled = false;
                 elements.restartBtn.disabled = false;
@@ -253,9 +248,8 @@
 
             renderChunk(startIdx, endIdx);
 
-            // --- IMPROVED TIMING LOGIC ---
-            const PRE_START_OFFSET = 0.05; // Start 50ms earlier
-            const POST_END_OFFSET = 0.05;  // End 50ms later
+            const PRE_START_OFFSET = 0.05;
+            const POST_END_OFFSET = 0.05;
             const startTime = state.timestamps[startIdx].start;
             const stopTime = state.timestamps[endIdx].end;
             const safeStartTime = Math.max(0, startTime - PRE_START_OFFSET);
@@ -273,10 +267,8 @@
                 }
                 elements.playChunkBtn.disabled = false;
                 elements.restartBtn.disabled = false;
-                if (isSpeechRecognitionSupported && !isMicrophoneMode) {
-                    elements.playMicBtn.disabled = false;
-                } else if (isSpeechRecognitionSupported && isMicrophoneMode) {
-                    elements.playMicBtn.disabled = false; // re-enable pause button after speaking
+                if (isSpeechRecognitionSupported) {
+                    elements.playMicBtn.disabled = false; 
                 }
             };
             
@@ -291,7 +283,7 @@
         });
 
         function setupSpeechRecognition() {
-            if (recognition) return; // Setup only once
+            if (recognition) return;
             recognition = new SpeechRecognition();
             recognition.lang = 'he-IL';
             recognition.continuous = false;
@@ -356,5 +348,4 @@
         elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
     </script>
 </body>
-</html>
-```
+</html>```
