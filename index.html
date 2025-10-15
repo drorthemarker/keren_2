@@ -42,7 +42,6 @@
 
     <div class="container" style="display: none;">
         <div id="text-display"></div>
-        <audio id="audio-player" style="width: 100%; margin-bottom: 20px; display: none;"></audio>
         <div class="controls">
             <button id="play-chunk-btn" disabled>נגן מקטע הבא</button>
             <button id="play-mic-btn" disabled>התחל עם מיקרופון</button>
@@ -59,7 +58,6 @@
         const isSpeechRecognitionSupported = SpeechRecognition != null;
 
         const elements = {
-            audioPlayer: document.getElementById('audio-player'),
             textDisplay: document.getElementById('text-display'),
             playChunkBtn: document.getElementById('play-chunk-btn'),
             playMicBtn: document.getElementById('play-mic-btn'),
@@ -180,7 +178,6 @@
             const minChunkSize = 3;
             const maxChunkSize = 7;
 
-            // 1. Prioritize finding a natural pause in the audio.
             for (let i = startIndex + minChunkSize; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
                 const previousWord = state.timestamps[i - 1];
                 const currentWord = state.timestamps[i];
@@ -190,7 +187,6 @@
                 }
             }
             
-            // 2. Fall back to punctuation-based logic.
             for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
                 const word = state.timestamps[i].word;
                 if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!') || word.endsWith(',')) {
@@ -198,7 +194,6 @@
                 }
             }
 
-            // 3. Default to the max chunk size.
             const bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
             return { startIdx: startIndex, endIdx: bestEndIndex };
         }
@@ -217,8 +212,6 @@
         }
 
         async function processNextChunk(isMicMode = false) {
-            // --- MAJOR CHANGE 1: Ensure the Audio Context is running ---
-            // This prevents the audio from going silent after a pause or tab switch.
             if (audioContext && audioContext.state === 'suspended') {
                 await audioContext.resume();
             }
@@ -245,15 +238,29 @@
 
             renderChunk(startIdx, endIdx);
 
-            // --- MAJOR CHANGE 2: More generous audio buffers ---
-            // This prevents the last word from sounding cut-off.
-            const PRE_START_OFFSET = 0.1;  // Start 100ms earlier
-            const POST_END_OFFSET = 0.2;   // End 200ms later
+            // --- ROBUST DURATION CALCULATION ---
+            const PRE_START_OFFSET = 0.1;
+            const POST_END_OFFSET = 0.2;
             
-            const startTime = state.timestamps[startIdx].start;
-            const stopTime = state.timestamps[endIdx].end;
-            const safeStartTime = Math.max(0, startTime - PRE_START_OFFSET);
-            const duration = Math.max(0, (stopTime + POST_END_OFFSET) - safeStartTime);
+            // 1. Calculate the desired start and stop times with offsets.
+            const desiredStartTime = state.timestamps[startIdx].start - PRE_START_OFFSET;
+            const desiredStopTime = state.timestamps[endIdx].end + POST_END_OFFSET;
+
+            // 2. "Clip" these times to the actual boundaries of the audio buffer.
+            const safeStartTime = Math.max(0, desiredStartTime);
+            const safeStopTime = Math.min(audioBuffer.duration, desiredStopTime);
+
+            // 3. Calculate the final, safe duration.
+            const duration = safeStopTime - safeStartTime;
+
+            // 4. Sanity Check: If duration is invalid, skip this chunk and move to the next.
+            if (duration <= 0) {
+                console.error(`Invalid duration calculated for chunk starting at index ${startIdx}. Skipping.`);
+                state.chunkIndex = endIdx + 1;
+                // Use requestAnimationFrame to avoid a recursive loop that could freeze the browser
+                requestAnimationFrame(() => processNextChunk(isMicMode));
+                return;
+            }
             
             if (currentChunkSource) currentChunkSource.stop();
             currentChunkSource = audioContext.createBufferSource();
@@ -265,7 +272,6 @@
                     elements.status.textContent = 'תורך, דבר...';
                     recognition.start();
                 }
-                // Re-enable buttons
                 elements.playChunkBtn.disabled = false;
                 elements.restartBtn.disabled = false;
                 if (isSpeechRecognitionSupported) {
@@ -349,4 +355,4 @@
         elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
     </script>
 </body>
-</html>
+</html>```
