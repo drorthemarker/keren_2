@@ -147,7 +147,6 @@
                 if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                elements.audioPlayer.src = URL.createObjectURL(audioFile);
                 state.timestamps = parseTimestamps(timestampText);
 
                 elements.playChunkBtn.disabled = false;
@@ -157,9 +156,6 @@
             } catch (error) {
                 console.error('Error loading local files:', error);
                 elements.status.textContent = `שגיאה בטעינת הקבצים: ${error.message}`;
-                elements.playChunkBtn.disabled = true;
-                elements.playMicBtn.disabled = true;
-                elements.restartBtn.disabled = true;
             }
         });
 
@@ -175,17 +171,14 @@
         function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
         function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
         
-        // --- NEW AND IMPROVED CHUNKING LOGIC ---
         function calculateNextChunk() {
             const totalWords = state.timestamps.length;
             const startIndex = state.chunkIndex;
             if (startIndex >= totalWords) return { startIdx: -1, endIdx: -1 };
 
-            const SILENCE_THRESHOLD = 0.25; // A 250ms pause is a strong indicator of a new phrase.
+            const SILENCE_THRESHOLD = 0.25;
             const minChunkSize = 3;
-            const maxChunkSize = 7; // We can allow slightly longer chunks if the speech flows.
-
-            let bestEndIndex = -1;
+            const maxChunkSize = 7;
 
             // 1. Prioritize finding a natural pause in the audio.
             for (let i = startIndex + minChunkSize; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
@@ -193,22 +186,20 @@
                 const currentWord = state.timestamps[i];
                 const gap = currentWord.start - previousWord.end;
                 if (gap >= SILENCE_THRESHOLD) {
-                    bestEndIndex = i - 1; // The chunk ends *before* the long pause.
-                    return { startIdx: startIndex, endIdx: bestEndIndex };
+                    return { startIdx: startIndex, endIdx: i - 1 };
                 }
             }
             
-            // 2. If no pause is found, fall back to punctuation-based logic.
+            // 2. Fall back to punctuation-based logic.
             for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
                 const word = state.timestamps[i].word;
                 if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!') || word.endsWith(',')) {
-                    bestEndIndex = i;
-                    return { startIdx: startIndex, endIdx: bestEndIndex };
+                    return { startIdx: startIndex, endIdx: i };
                 }
             }
 
-            // 3. If still no good break, default to the max chunk size.
-            bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
+            // 3. Default to the max chunk size.
+            const bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
             return { startIdx: startIndex, endIdx: bestEndIndex };
         }
 
@@ -225,7 +216,13 @@
             } 
         }
 
-        function processNextChunk(isMicMode = false) {
+        async function processNextChunk(isMicMode = false) {
+            // --- MAJOR CHANGE 1: Ensure the Audio Context is running ---
+            // This prevents the audio from going silent after a pause or tab switch.
+            if (audioContext && audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
             elements.playChunkBtn.disabled = true;
             elements.playMicBtn.disabled = true;
             elements.restartBtn.disabled = true;
@@ -248,8 +245,11 @@
 
             renderChunk(startIdx, endIdx);
 
-            const PRE_START_OFFSET = 0.05;
-            const POST_END_OFFSET = 0.05;
+            // --- MAJOR CHANGE 2: More generous audio buffers ---
+            // This prevents the last word from sounding cut-off.
+            const PRE_START_OFFSET = 0.1;  // Start 100ms earlier
+            const POST_END_OFFSET = 0.2;   // End 200ms later
+            
             const startTime = state.timestamps[startIdx].start;
             const stopTime = state.timestamps[endIdx].end;
             const safeStartTime = Math.max(0, startTime - PRE_START_OFFSET);
@@ -265,6 +265,7 @@
                     elements.status.textContent = 'תורך, דבר...';
                     recognition.start();
                 }
+                // Re-enable buttons
                 elements.playChunkBtn.disabled = false;
                 elements.restartBtn.disabled = false;
                 if (isSpeechRecognitionSupported) {
@@ -348,4 +349,4 @@
         elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
     </script>
 </body>
-</html>```
+</html>
