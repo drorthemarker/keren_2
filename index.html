@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Text Synchronizer - Manual File Load</title>
+    <style>
+        :root { --highlight-color: #FFD700; --primary-blue: #007bff; --mic-active-color: #dc3545; --light-gray: #6c757d; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #f4f4f9; margin: 0; padding: 20px; box-sizing: border-box; }
+        .container { width: 90%; max-width: 900px; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 20px; margin-top: 15px; }
+        #file-selection { width: 90%; max-width: 900px; margin-bottom: 20px; text-align: right; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .file-upload-area { display: flex; justify-content: space-around; gap: 15px; margin-bottom: 20px; }
+        #text-display { height: 20vh; overflow-y: auto; border: 1px solid #ddd; padding: 15px; font-size: 24px; line-height: 2.3; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; }
+        #text-display span.highlight-chunk { background-color: var(--highlight-color); color: black; border-radius: 4px; }
+        .controls { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; align-items: center; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; background-color: var(--primary-blue); color: white; transition: background-color 0.2s; min-width: 180px; text-align: center;}
+        button.upload-btn { background-color: var(--light-gray); flex-grow: 1; }
+        button#play-mic-btn.active { background-color: var(--mic-active-color); }
+        button:hover:not(:disabled) { opacity: 0.85; }
+        button:disabled { background-color: #a0a0a0; cursor: not-allowed; }
+        .font-controls { display: flex; gap: 5px; }
+        .font-controls button { min-width: 45px; font-size: 20px; font-weight: bold; }
+        #status { font-size: 16px; color: #333; height: 20px; margin-top: 15px; text-align: center;}
+    </style>
+</head>
+<body>
+    <h1>מסנכרן אודיו וטקסט</h1>
+
+    <div id="file-selection">
+        <h2>אנא העלה את הקבצים שלך:</h2>
+        <div class="file-upload-area">
+            <!-- These inputs are hidden, triggered by the buttons -->
+            <input type="file" id="audio-file-input" accept=".wav,audio/wav" style="display: none;">
+            <input type="file" id="timestamp-file-input" accept=".txt,text/plain" style="display: none;">
+
+            <button id="upload-audio-btn" class="upload-btn">בחר קובץ שמע (wav)</button>
+            <button id="upload-sync-btn" class="upload-btn">בחר קובץ תזמונים (txt)</button>
+        </div>
+        <button id="load-files-btn" disabled>טען קבצים</button>
+    </div>
+
+    <p id="status">בחר קובץ שמע וקובץ תזמונים כדי להפעיל את כפתור הטעינה.</p>
+
+    <div class="container" style="display: none;">
+        <div id="text-display"></div>
+        <audio id="audio-player" style="width: 100%; margin-bottom: 20px; display: none;"></audio>
+        <div class="controls">
+            <button id="play-chunk-btn" disabled>נגן מקטע הבא</button>
+            <button id="play-mic-btn" disabled>התחל עם מיקרופון</button>
+            <div class="font-controls">
+                <button id="font-decrease-btn" title="הקטן גופן">-</button>
+                <button id="font-increase-btn" title="הגדל גופן">+</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const isSpeechRecognitionSupported = SpeechRecognition != null;
+
+        const elements = {
+            audioPlayer: document.getElementById('audio-player'),
+            textDisplay: document.getElementById('text-display'),
+            playChunkBtn: document.getElementById('play-chunk-btn'),
+            playMicBtn: document.getElementById('play-mic-btn'),
+            fontIncreaseBtn: document.getElementById('font-increase-btn'),
+            fontDecreaseBtn: document.getElementById('font-decrease-btn'),
+            status: document.getElementById('status'),
+            container: document.querySelector('.container'),
+            loadFilesBtn: document.getElementById('load-files-btn'),
+            audioFileInput: document.getElementById('audio-file-input'),
+            timestampFileInput: document.getElementById('timestamp-file-input'),
+            uploadAudioBtn: document.getElementById('upload-audio-btn'),
+            uploadSyncBtn: document.getElementById('upload-sync-btn'),
+        };
+
+        let audioContext, audioBuffer, currentChunkSource;
+        let recognition, isMicrophoneMode = false;
+        let currentFontSize = 24;
+
+        let state = {
+            timestamps: [],
+            chunkIndex: 0,
+        };
+        
+        // --- Setup and File Loading ---
+        window.addEventListener('DOMContentLoaded', () => {
+            if (!isSpeechRecognitionSupported) {
+                elements.playMicBtn.disabled = true;
+                elements.playMicBtn.textContent = 'מיקרופון לא נתמך';
+            }
+        });
+
+        // Function to check if both files are selected and enable the load button
+        function checkFilesSelected() {
+            const audioFile = elements.audioFileInput.files[0];
+            const timestampFile = elements.timestampFileInput.files[0];
+
+            if (audioFile && timestampFile) {
+                elements.loadFilesBtn.disabled = false;
+                elements.status.textContent = 'קבצים נבחרו. לחץ על "טען קבצים" כדי להמשיך.';
+            } else {
+                elements.loadFilesBtn.disabled = true;
+            }
+        }
+
+        // Trigger file inputs with custom buttons
+        elements.uploadAudioBtn.addEventListener('click', () => elements.audioFileInput.click());
+        elements.uploadSyncBtn.addEventListener('click', () => elements.timestampFileInput.click());
+
+        // Listen for file selection
+        elements.audioFileInput.addEventListener('change', () => {
+            const file = elements.audioFileInput.files[0];
+            if (file) {
+                elements.uploadAudioBtn.textContent = file.name;
+            }
+            checkFilesSelected();
+        });
+
+        elements.timestampFileInput.addEventListener('change', () => {
+            const file = elements.timestampFileInput.files[0];
+            if (file) {
+                elements.uploadSyncBtn.textContent = file.name;
+            }
+            checkFilesSelected();
+        });
+
+        elements.loadFilesBtn.addEventListener('click', async () => {
+            const audioFile = elements.audioFileInput.files[0];
+            const timestampFile = elements.timestampFileInput.files[0];
+
+            if (!audioFile || !timestampFile) {
+                elements.status.textContent = 'שגיאה: עליך לבחור גם קובץ שמע וגם קובץ תזמונים.';
+                return;
+            }
+
+            resetStateAndUI();
+            elements.status.textContent = `טוען קבצים...`;
+            elements.container.style.display = 'block';
+
+            try {
+                const readFileAsArrayBuffer = (file) => new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsArrayBuffer(file);
+                });
+
+                const readFileAsText = (file) => new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsText(file);
+                });
+
+                const [arrayBuffer, timestampText] = await Promise.all([
+                    readFileAsArrayBuffer(audioFile),
+                    readFileAsText(timestampFile)
+                ]);
+
+                if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                elements.audioPlayer.src = URL.createObjectURL(audioFile);
+                state.timestamps = parseTimestamps(timestampText);
+
+                elements.playChunkBtn.disabled = false;
+                if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
+                elements.status.textContent = 'מוכן. לחץ על כפתור כדי להתחיל.';
+            } catch (error) {
+                console.error('Error loading local files:', error);
+                elements.status.textContent = `שגיאה בטעינת הקבצים: ${error.message}`;
+                elements.playChunkBtn.disabled = true;
+                elements.playMicBtn.disabled = true;
+            }
+        });
+
+        function resetStateAndUI() {
+            if (isMicrophoneMode) stopMicrophoneMode();
+            if (currentChunkSource) currentChunkSource.stop();
+            elements.audioPlayer.pause();
+            elements.audioPlayer.removeAttribute('src');
+            elements.audioPlayer.load();
+            audioBuffer = null;
+            state.timestamps = [];
+            state.chunkIndex = 0;
+            elements.textDisplay.innerHTML = '';
+        }
+
+        function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
+        function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
+        
+        // --- MODIFIED LOGIC ---
+        // This function now intelligently finds the best breaking point for a chunk of text.
+        function calculateNextChunk() {
+            const totalWords = state.timestamps.length;
+            const startIndex = state.chunkIndex;
+
+            if (startIndex >= totalWords) {
+                return { startIdx: -1, endIdx: -1 }; // No more words left
+            }
+
+            const minChunkSize = 3;
+            const maxChunkSize = 5; // You can adjust this value if needed
+
+            let bestEndIndex = -1;
+
+            // First, search for strong terminators (like '.', '?', '!') within the desired range
+            for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
+                const word = state.timestamps[i].word;
+                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!')) {
+                    bestEndIndex = i;
+                    break; // Found the best possible break, no need to search further
+                }
+            }
+
+            // If no strong terminator was found, search for weaker separators (like ',')
+            if (bestEndIndex === -1) {
+                // Search backwards from the max length to find the latest possible separator
+                for (let i = startIndex + maxChunkSize - 1; i >= startIndex + minChunkSize - 1; i--) {
+                    if (i < totalWords) {
+                        const word = state.timestamps[i].word;
+                        if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
+                            bestEndIndex = i;
+                            break; // Found a good breaking point
+                        }
+                    }
+                }
+            }
+
+            // If still no punctuation break, try to avoid breaking right before "ו"
+            if (bestEndIndex === -1) {
+                // We check from the max size downwards to get the longest possible chunk
+                for (let i = Math.min(startIndex + maxChunkSize - 1, totalWords - 1); i >= startIndex + minChunkSize - 1; i--) {
+                    // Check if the *next* word starts with "ו"
+                    if (i + 1 < totalWords) {
+                        const nextWord = state.timestamps[i + 1].word;
+                        if (!nextWord.startsWith('ו')) {
+                            bestEndIndex = i; // This is a safe place to break
+                            break;
+                        }
+                    } else {
+                        // This is the last word of the text, so it's a valid end index
+                        bestEndIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            // If no ideal break was found through the logic above, default to the max chunk size
+            if (bestEndIndex === -1) {
+                bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
+            }
+            
+            // Final fallback to ensure we always make progress, even if the above logic fails
+            if (bestEndIndex < startIndex) {
+               bestEndIndex = Math.min(startIndex + minChunkSize - 1, totalWords - 1);
+            }
+
+            return { startIdx: startIndex, endIdx: bestEndIndex };
+        }
+
+        function renderChunk(startIdx, endIdx) { 
+            elements.textDisplay.innerHTML = ''; 
+            if (startIdx === -1) return; 
+            for (let i = startIdx; i <= endIdx; i++) { 
+                const ts = state.timestamps[i]; 
+                const span = document.createElement('span'); 
+                span.className = 'word highlight-chunk'; 
+                span.id = `word-${i}`; 
+                span.textContent = ts.word + '\u00A0'; 
+                elements.textDisplay.appendChild(span); 
+            } 
+        }
+
+        // --- Core Logic for Processing Chunks ---
+        function processNextChunk(isMicMode = false) {
+            elements.playChunkBtn.disabled = true;
+            elements.playMicBtn.disabled = true;
+            const { startIdx, endIdx } = calculateNextChunk();
+            if (startIdx === -1) {
+                elements.status.textContent = "הגעת לסוף!";
+                if (isMicMode) stopMicrophoneMode();
+                else {
+                    elements.playChunkBtn.disabled = false;
+                    if(isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
+                }
+                state.chunkIndex = 0;
+                elements.textDisplay.innerHTML = '';
+                return;
+            }
+            renderChunk(startIdx, endIdx);
+            const startTime = state.timestamps[startIdx].start;
+            const stopTime = state.timestamps[endIdx].end;
+            const safeStartTime = Math.max(0, startTime);
+            const duration = Math.max(0, (stopTime - safeStartTime) + 0.1);
+            if (currentChunkSource) currentChunkSource.stop();
+            currentChunkSource = audioContext.createBufferSource();
+            currentChunkSource.buffer = audioBuffer;
+            currentChunkSource.connect(audioContext.destination);
+            currentChunkSource.onended = () => {
+                if (isMicMode && isMicrophoneMode) {
+                    elements.status.textContent = 'תורך, דבר...';
+                    recognition.start();
+                } else if (!isMicMode) {
+                    elements.playChunkBtn.disabled = false;
+                    if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
+                }
+            };
+            elements.status.textContent = 'מקשיבים לאודיו...';
+            currentChunkSource.start(0, safeStartTime, duration);
+            state.chunkIndex = endIdx + 1;
+        }
+
+        elements.playChunkBtn.addEventListener('click', () => {
+            if (isMicrophoneMode || !audioContext || !audioBuffer) return;
+            processNextChunk(false);
+        });
+
+        // --- Speech Recognition Logic ---
+        function setupSpeechRecognition() {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'he-IL';
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.onspeechend = () => {
+                elements.status.textContent = 'הבנתי, מקדם למקטע הבא...';
+                setTimeout(() => processNextChunk(true), 500);
+            };
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error', event.error);
+                if (event.error === 'no-speech' && isMicrophoneMode) {
+                    elements.status.textContent = 'לא שמעתי כלום, נסה שוב...';
+                    recognition.start();
+                } else if (event.error === 'not-allowed') {
+                    elements.status.textContent = 'נדחתה הרשאת גישה למיקרופון.';
+                    stopMicrophoneMode();
+                }
+            };
+        }
+
+        function startMicrophoneMode() {
+            isMicrophoneMode = true;
+            state.chunkIndex = 0;
+            elements.playMicBtn.textContent = 'עצור מיקרופון';
+            elements.playMicBtn.classList.add('active');
+            setupSpeechRecognition();
+            processNextChunk(true);
+        }
+
+        function stopMicrophoneMode() {
+            isMicrophoneMode = false;
+            if (recognition) recognition.abort();
+            if (currentChunkSource) currentChunkSource.stop();
+            elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+            elements.playMicBtn.classList.remove('active');
+            elements.status.textContent = 'מצב מיקרופון הופסק.';
+            const filesLoaded = audioBuffer && state.timestamps.length > 0;
+            elements.playChunkBtn.disabled = !filesLoaded;
+            if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = !filesLoaded;
+        }
+
+        elements.playMicBtn.addEventListener('click', () => {
+            if (isMicrophoneMode) {
+                stopMicrophoneMode();
+            } else {
+                startMicrophoneMode();
+            }
+        });
+        
+        // --- Font Size Controls ---
+        elements.fontIncreaseBtn.addEventListener('click', () => { if (currentFontSize >= 100) return; currentFontSize += 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
+        elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
+    </script>
+</body>
+</html>
