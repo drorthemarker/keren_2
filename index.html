@@ -167,56 +167,54 @@
         function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
         function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
         
+        // --- COMPLETELY REWRITTEN CHUNKING LOGIC ---
         function calculateNextChunk() {
             const totalWords = state.timestamps.length;
             const startIndex = state.chunkIndex;
             if (startIndex >= totalWords) return { startIdx: -1, endIdx: -1 };
 
             const minChunkSize = 3;
-            const maxChunkSize = 7;
+            const maxSearchLength = 7; // How far ahead to look for a break
             const wordsRemaining = totalWords - startIndex;
             const SILENCE_THRESHOLD = 0.25;
 
-            // --- REBUILT LOGIC ---
-
-            // 1. If we are near the end, take all remaining words to ensure we finish cleanly.
+            // 1. Highest Priority: Handle the end of the text.
+            // If fewer than (min + 1) words are left, just take them all.
             if (wordsRemaining <= minChunkSize) {
                 return { startIdx: startIndex, endIdx: totalWords - 1 };
             }
 
-            // 2. Search for the best natural break point within our window.
-            let breakIndex = -1;
-            // We search backwards from the end of the window to find the longest possible natural phrase.
-            const searchEndIndex = Math.min(startIndex + maxChunkSize, totalWords);
-
-            for (let i = searchEndIndex - 1; i >= startIndex + 1; i--) { // Ensure at least a 2-word chunk
+            // 2. Search for the best natural breaking point within the search window.
+            const searchEndIndex = Math.min(startIndex + maxSearchLength, totalWords - 1);
+            
+            // We search from the start of the potential chunk forward.
+            for (let i = startIndex + 1; i < searchEndIndex; i++) {
                 const currentWord = state.timestamps[i];
-                const previousWord = state.timestamps[i-1];
-                
-                // Check for a long pause *before* the current word. This is a very strong signal.
+                const previousWord = state.timestamps[i - 1];
+
+                // Rule A: Break after a long pause.
                 const gap = currentWord.start - previousWord.end;
                 if (gap >= SILENCE_THRESHOLD) {
-                    breakIndex = i - 1; // Break after the previous word
-                    break; 
+                    return { startIdx: startIndex, endIdx: i - 1 };
                 }
 
-                // Check for punctuation at the current word. Also a strong signal.
-                if (currentWord.word.endsWith(',') || currentWord.word.endsWith('.') || currentWord.word.endsWith('?') || currentWord.word.endsWith('!')) {
-                    breakIndex = i;
-                    break;
+                // Rule B: Break before a "ו" conjunction.
+                if (currentWord.word.startsWith('ו')) {
+                    // Only break if the resulting chunk is not too small (at least 2 words).
+                    if ((i - 1) - startIndex >= 1) { 
+                        return { startIdx: startIndex, endIdx: i - 1 };
+                    }
+                }
+                
+                // Rule C: Break on punctuation.
+                if (previousWord.word.endsWith(',') || previousWord.word.endsWith('.')) {
+                    return { startIdx: startIndex, endIdx: i - 1 };
                 }
             }
-            
-            // 3. Decide what chunk to return based on the search.
-            if (breakIndex !== -1) {
-                // We found a good natural break point. Use it.
-                return { startIdx: startIndex, endIdx: breakIndex };
-            } else {
-                // No natural break was found, so we fall back to a default chunk size.
-                // This ensures the app always progresses.
-                const defaultEndIndex = startIndex + minChunkSize - 1;
-                return { startIdx: startIndex, endIdx: defaultEndIndex };
-            }
+
+            // 3. Fallback: If no natural break was found, return a default chunk.
+            // This ensures the application always progresses.
+            return { startIdx: startIndex, endIdx: startIndex + minChunkSize - 1 };
         }
 
         function renderChunk(startIdx, endIdx) { 
@@ -260,17 +258,14 @@
 
             const PRE_START_OFFSET = 0.1;
             const POST_END_OFFSET = 0.2;
-            
             const desiredStartTime = state.timestamps[startIdx].start - PRE_START_OFFSET;
             const desiredStopTime = state.timestamps[endIdx].end + POST_END_OFFSET;
-
             const safeStartTime = Math.max(0, desiredStartTime);
             const safeStopTime = Math.min(audioBuffer.duration, desiredStopTime);
-
             const duration = safeStopTime - safeStartTime;
 
             if (duration <= 0) {
-                console.error(`Invalid duration for chunk starting at index ${startIdx}. Skipping.`);
+                console.error(`Invalid duration for chunk ${startIdx}. Skipping.`);
                 state.chunkIndex = endIdx + 1;
                 requestAnimationFrame(() => processNextChunk(isMicMode));
                 return;
