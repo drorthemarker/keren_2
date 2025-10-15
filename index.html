@@ -100,13 +100,11 @@
 
         elements.uploadAudioBtn.addEventListener('click', () => elements.audioFileInput.click());
         elements.uploadSyncBtn.addEventListener('click', () => elements.timestampFileInput.click());
-
         elements.audioFileInput.addEventListener('change', () => {
             const file = elements.audioFileInput.files[0];
             if (file) elements.uploadAudioBtn.textContent = file.name;
             checkFilesSelected();
         });
-
         elements.timestampFileInput.addEventListener('change', () => {
             const file = elements.timestampFileInput.files[0];
             if (file) elements.uploadSyncBtn.textContent = file.name;
@@ -175,39 +173,50 @@
             if (startIndex >= totalWords) return { startIdx: -1, endIdx: -1 };
 
             const minChunkSize = 3;
+            const maxChunkSize = 7;
             const wordsRemaining = totalWords - startIndex;
+            const SILENCE_THRESHOLD = 0.25;
 
-            // --- CRITICAL FIX: Handle the end of the text ---
-            // If the number of remaining words is less than our minimum,
-            // we must take all of them to finish the text.
+            // --- REBUILT LOGIC ---
+
+            // 1. If we are near the end, take all remaining words to ensure we finish cleanly.
             if (wordsRemaining <= minChunkSize) {
                 return { startIdx: startIndex, endIdx: totalWords - 1 };
             }
 
-            const SILENCE_THRESHOLD = 0.25;
-            const maxChunkSize = 7;
+            // 2. Search for the best natural break point within our window.
+            let breakIndex = -1;
+            // We search backwards from the end of the window to find the longest possible natural phrase.
+            const searchEndIndex = Math.min(startIndex + maxChunkSize, totalWords);
 
-            // 1. Prioritize finding a natural pause in the audio.
-            for (let i = startIndex + minChunkSize; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
-                const previousWord = state.timestamps[i - 1];
+            for (let i = searchEndIndex - 1; i >= startIndex + 1; i--) { // Ensure at least a 2-word chunk
                 const currentWord = state.timestamps[i];
+                const previousWord = state.timestamps[i-1];
+                
+                // Check for a long pause *before* the current word. This is a very strong signal.
                 const gap = currentWord.start - previousWord.end;
                 if (gap >= SILENCE_THRESHOLD) {
-                    return { startIdx: startIndex, endIdx: i - 1 };
+                    breakIndex = i - 1; // Break after the previous word
+                    break; 
+                }
+
+                // Check for punctuation at the current word. Also a strong signal.
+                if (currentWord.word.endsWith(',') || currentWord.word.endsWith('.') || currentWord.word.endsWith('?') || currentWord.word.endsWith('!')) {
+                    breakIndex = i;
+                    break;
                 }
             }
             
-            // 2. Fall back to punctuation-based logic.
-            for (let i = startIndex + minChunkSize - 1; i < Math.min(startIndex + maxChunkSize, totalWords); i++) {
-                const word = state.timestamps[i].word;
-                if (word.endsWith('.') || word.endsWith('?') || word.endsWith('!') || word.endsWith(',')) {
-                    return { startIdx: startIndex, endIdx: i };
-                }
+            // 3. Decide what chunk to return based on the search.
+            if (breakIndex !== -1) {
+                // We found a good natural break point. Use it.
+                return { startIdx: startIndex, endIdx: breakIndex };
+            } else {
+                // No natural break was found, so we fall back to a default chunk size.
+                // This ensures the app always progresses.
+                const defaultEndIndex = startIndex + minChunkSize - 1;
+                return { startIdx: startIndex, endIdx: defaultEndIndex };
             }
-
-            // 3. Default to the max chunk size if no other break is found.
-            const bestEndIndex = Math.min(startIndex + maxChunkSize - 1, totalWords - 1);
-            return { startIdx: startIndex, endIdx: bestEndIndex };
         }
 
         function renderChunk(startIdx, endIdx) { 
@@ -261,7 +270,7 @@
             const duration = safeStopTime - safeStartTime;
 
             if (duration <= 0) {
-                console.error(`Invalid duration calculated for chunk starting at index ${startIdx}. Skipping.`);
+                console.error(`Invalid duration for chunk starting at index ${startIdx}. Skipping.`);
                 state.chunkIndex = endIdx + 1;
                 requestAnimationFrame(() => processNextChunk(isMicMode));
                 return;
