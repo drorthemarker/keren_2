@@ -178,3 +178,192 @@
             const maxChunkSize = 7;
             const wordsRemaining = totalWords - startIndex;
             const SILENCE_THRESHOLD = 0.25;
+
+            // 1. End of Text Rule: If we have few words left, take them all.
+            if (wordsRemaining <= maxChunkSize) {
+                return { startIdx: startIndex, endIdx: totalWords - 1 };
+            }
+
+            let bestBreakIndex = -1;
+            let highestScore = -1;
+
+            // 2. Scoring Rule: Search backwards from the max length for the best natural break.
+            for (let i = startIndex + maxChunkSize - 1; i >= startIndex + minChunkSize - 1; i--) {
+                let currentScore = 0;
+                const currentWord = state.timestamps[i];
+                const nextWord = state.timestamps[i + 1];
+                const silenceGap = nextWord.start - currentWord.end;
+                
+                if (silenceGap >= SILENCE_THRESHOLD) currentScore = 100;
+                else if (currentWord.word.endsWith(',') || currentWord.word.endsWith('.')) currentScore = 50;
+                else if (nextWord.word.startsWith('ו')) currentScore = 40;
+                
+                if (currentScore > highestScore) {
+                    highestScore = currentScore;
+                    bestBreakIndex = i;
+                }
+            }
+            
+            // 3. Decision Rule: If a natural break was found, use it.
+            if (bestBreakIndex !== -1) {
+                return { startIdx: startIndex, endIdx: bestBreakIndex };
+            }
+
+            // 4. Fallback Rule: Take the minimum chunk size.
+            return { startIdx: startIndex, endIdx: startIndex + minChunkSize - 1 };
+        }
+
+        function renderChunk(startIdx, endIdx) { 
+            elements.textDisplay.innerHTML = ''; 
+            if (startIdx === -1) return; 
+            for (let i = startIdx; i <= endIdx; i++) { 
+                const ts = state.timestamps[i]; 
+                const span = document.createElement('span'); 
+                span.className = 'word highlight-chunk'; 
+                span.textContent = ts.word + '\u00A0'; 
+                elements.textDisplay.appendChild(span); 
+            } 
+        }
+
+        async function processNextChunk(isMicMode = false) {
+            if (audioContext && audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
+            elements.playChunkBtn.disabled = true;
+            elements.playMicBtn.disabled = true;
+            elements.restartBtn.disabled = true;
+
+            const { startIdx, endIdx } = calculateNextChunk();
+
+            if (startIdx === -1) {
+                elements.status.textContent = "הגעת לסוף!";
+                if (isMicMode) pauseMicrophoneMode();
+                state.chunkIndex = 0;
+                elements.textDisplay.innerHTML = '';
+                elements.playChunkBtn.disabled = false;
+                elements.restartBtn.disabled = false;
+                if(isSpeechRecognitionSupported) {
+                    elements.playMicBtn.disabled = false;
+                    elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+                }
+                return;
+            }
+
+            renderChunk(startIdx, endIdx);
+
+            const PRE_START_OFFSET = 0.1;
+            let postEndOffset = 0.2; // Default for last phrase of text
+
+            if (endIdx + 1 < state.timestamps.length) {
+                const lastWordOfChunk = state.timestamps[endIdx];
+                const firstWordOfNextChunk = state.timestamps[endIdx + 1];
+                const silenceGap = firstWordOfNextChunk.start - lastWordOfChunk.end;
+                postEndOffset = Math.min(0.2, silenceGap / 2);
+            }
+            
+            const desiredStartTime = state.timestamps[startIdx].start - PRE_START_OFFSET;
+            const desiredStopTime = state.timestamps[endIdx].end + postEndOffset;
+            const safeStartTime = Math.max(0, desiredStartTime);
+            const safeStopTime = Math.min(audioBuffer.duration, desiredStopTime);
+            const duration = safeStopTime - safeStartTime;
+
+            if (duration <= 0) {
+                console.error(`Invalid duration for chunk ${startIdx}. Skipping.`);
+                state.chunkIndex = endIdx + 1;
+                requestAnimationFrame(() => processNextChunk(isMicMode));
+                return;
+            }
+            
+            if (currentChunkSource) currentChunkSource.stop();
+            currentChunkSource = audioContext.createBufferSource();
+            currentChunkSource.buffer = audioBuffer;
+            currentChunkSource.connect(audioContext.destination);
+            
+            currentChunkSource.onended = () => {
+                if (isMicrophoneMode) {
+                    elements.status.textContent = 'תורך, דבר...';
+                    recognition.start();
+                }
+                elements.playChunkBtn.disabled = false;
+                elements.restartBtn.disabled = false;
+                if (isSpeechRecognitionSupported) {
+                    elements.playMicBtn.disabled = false; 
+                }
+            };
+            
+            elements.status.textContent = 'מקשיבים לאודיו...';
+            currentChunkSource.start(0, safeStartTime, duration);
+            state.chunkIndex = endIdx + 1;
+        }
+
+        elements.playChunkBtn.addEventListener('click', () => {
+            if (isMicrophoneMode || !audioContext || !audioBuffer) return;
+            processNextChunk(false);
+        });
+
+        function setupSpeechRecognition() {
+            if (recognition) return;
+            recognition = new SpeechRecognition();
+            recognition.lang = 'he-IL';
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.onspeechend = () => {
+                elements.status.textContent = 'הבנתי, מקדם למקטע הבא...';
+                setTimeout(() => processNextChunk(true), 500);
+            };
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error', event.error);
+                if (event.error === 'no-speech' && isMicrophoneMode) {
+                    elements.status.textContent = 'לא שמעתי כלום, נסה שוב...';
+                    recognition.start();
+                } else if (event.error === 'not-allowed') {
+                    elements.status.textContent = 'נדחתה הרשאת גישה למיקרופון.';
+                    pauseMicrophoneMode();
+                }
+            };
+        }
+
+        function startOrResumeMicrophoneMode() {
+            isMicrophoneMode = true;
+            elements.playMicBtn.textContent = 'השהה מיקרופון';
+            elements.playMicBtn.classList.add('active');
+            setupSpeechRecognition();
+            processNextChunk(true);
+        }
+
+        function pauseMicrophoneMode() {
+            isMicrophoneMode = false;
+            if (recognition) recognition.abort();
+            if (currentChunkSource) currentChunkSource.stop();
+            elements.playMicBtn.textContent = 'המשך עם מיקרופון';
+            elements.playMicBtn.classList.remove('active');
+            elements.status.textContent = 'מצב מיקרופון הושהה.';
+            const filesLoaded = audioBuffer && state.timestamps.length > 0;
+            elements.playChunkBtn.disabled = !filesLoaded;
+            elements.restartBtn.disabled = !filesLoaded;
+            if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = !filesLoaded;
+        }
+
+        function restartProcess() {
+            if (isMicrophoneMode) pauseMicrophoneMode();
+            state.chunkIndex = 0;
+            elements.textDisplay.innerHTML = '';
+            elements.status.textContent = 'התהליך אופס. לחץ על "התחל" כדי להתחיל מההתחלה.';
+            elements.playMicBtn.textContent = 'התחל עם מיקרופון';
+        }
+        elements.restartBtn.addEventListener('click', restartProcess);
+
+        elements.playMicBtn.addEventListener('click', () => {
+            if (isMicrophoneMode) {
+                pauseMicrophoneMode();
+            } else {
+                startOrResumeMicrophoneMode();
+            }
+        });
+        
+        elements.fontIncreaseBtn.addEventListener('click', () => { if (currentFontSize >= 100) return; currentFontSize += 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
+        elements.fontDecreaseBtn.addEventListener('click', () => { if (currentFontSize <= 12) return; currentFontSize -= 2; elements.textDisplay.style.fontSize = `${currentFontSize}px`; });
+    </script>
+</body>
+</html>
