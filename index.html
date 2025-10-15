@@ -141,28 +141,19 @@
                     readFileAsArrayBuffer(audioFile),
                     readFileAsText(timestampFile)
                 ]);
-                console.log("Files read successfully.");
 
                 if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                console.log("Audio decoded successfully. Duration:", audioBuffer.duration);
-
                 state.timestamps = parseTimestamps(timestampText);
-                console.log("Timestamps parsed. Count:", state.timestamps.length);
-
-                if (state.timestamps.length === 0) {
-                    throw new Error("קובץ התזמונים ריק או בפורמט לא תקין.");
-                }
 
                 elements.playChunkBtn.disabled = false;
                 elements.restartBtn.disabled = false;
                 if (isSpeechRecognitionSupported) elements.playMicBtn.disabled = false;
                 elements.status.textContent = 'מוכן. לחץ על כפתור כדי להתחיל.';
             } catch (error) {
-                console.error("DETAILED ERROR in file loading:", error);
+                console.error("Error during file loading:", error);
                 elements.status.textContent = `שגיאה בטעינת הקבצים: ${error.message}`;
-                elements.container.style.display = 'none'; // Hide container on error
             }
         });
 
@@ -175,25 +166,8 @@
             elements.textDisplay.innerHTML = '';
         }
 
-        function parseTime(timeStr) {
-            let s=0; 
-            const m=timeStr.match(/(\d+)m/); 
-            if(m)s+=parseInt(m[1])*60; 
-            const sec=timeStr.match(/(\d+)s/); 
-            if(sec)s+=parseInt(sec[1]); 
-            const ms=timeStr.match(/(\d+)ms/); 
-            if(ms)s+=parseInt(ms[1])/1000; 
-            return s; 
-        }
-
-        function parseTimestamps(text) { 
-            return text.split('\n')
-                .map(line => { 
-                    const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); 
-                    return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; 
-                })
-                .filter(Boolean); // Removes any null entries from lines that didn't match
-        }
+        function parseTime(timeStr) { let s=0; const m=timeStr.match(/(\d+)m/); if(m)s+=parseInt(m[1])*60; const sec=timeStr.match(/(\d+)s/); if(sec)s+=parseInt(sec[1]); const ms=timeStr.match(/(\d+)ms/); if(ms)s+=parseInt(ms[1])/1000; return s; }
+        function parseTimestamps(text) { return text.split('\n').map(line => { const match = line.trim().match(/\[\s*(.*?)\s*-\s*(.*?)\s*\]\s*(.*)/); return match ? { start: parseTime(match[1]), end: parseTime(match[2]), word: match[3] } : null; }).filter(Boolean); }
         
         function calculateNextChunk() {
             const totalWords = state.timestamps.length;
